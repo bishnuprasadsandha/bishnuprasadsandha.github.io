@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EasyBize | Small Business Management</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Use Inter font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .tab-button.active {
+            background-color: #10b981; /* emerald-500 */
+            color: white;
+        }
+        /* Login screen styling */
+        #login-screen {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f3f4f6;
+        }
+    </style>
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, collection, query, where, addDoc, updateDoc, deleteDoc, setDoc, getDocs, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-easybize-app';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : undefined;
+
+        // --- AUTH/ROLE CONFIG ---
+        const ADMIN_USER = 'admin';
+        const ADMIN_PASS = 'admin123';
+        let currentUserRole = null;
+        let currentUserName = null;
+
+        // --- CORE BUSINESS CLASSES (Java-like structure in JavaScript) ---
+
+        /**
+         * Represents a product managed by the business.
+         */
+        class Product {
+            constructor(id, name, price, cost) {
+                this.id = id;
+                this.name = name;
+                this.price = parseFloat(price);
+                this.productionCost = parseFloat(cost);
+                this.profit = this.price - this.productionCost;
+            }
+        }
+
+        /**
+         * Represents a customer of the business.
+         */
+        class Customer {
+            constructor(id, name, email, phone) {
+                this.id = id;
+                this.name = name;
+                this.email = email;
+                this.phone = phone;
+            }
+        }
+
+        /**
+         * Represents a completed sale/bill.
+         */
+        class Sale {
+            constructor(id, customerName, items, total, date) {
+                this.id = id;
+                this.customerName = customerName;
+                this.items = items; // Array of { productId, name, quantity, price, subtotal }
+                this.totalAmount = parseFloat(total);
+                this.date = date ? date.toDate().toLocaleString() : new Date().toLocaleString();
+            }
+        }
+
+        /**
+         * The central manager for all business operations and Firestore interaction.
+         */
+        class BusinessManager {
+            constructor(db) {
+                this.db = db;
+
+                // Real-time data storage
+                this.products = [];
+                this.customers = [];
+                this.sales = [];
+                this.listeners = []; // To store unsubscribe functions
+            }
+
+            // IMPORTANT: Uses the public path for shared business data
+            getCollectionPath(collectionName) {
+                return `artifacts/${appId}/public/data/${collectionName}`;
+            }
+
+            // --- Product Management ---
+
+            async addProduct(name, price, cost) {
+                const productsRef = collection(this.db, this.getCollectionPath('products'));
+                try {
+                    await addDoc(productsRef, { name, price: price, productionCost: cost });
+                    this.showToast('Product added successfully!');
+                } catch (error) {
+                    console.error("Failed to add product:", error);
+                    this.showToast('Failed to add product. Check console (Permission Denied likely).', 'bg-red-500');
+                }
+            }
+
+            async updateProduct(id, name, price, cost) {
+                const productRef = doc(this.db, this.getCollectionPath('products'), id);
+                try {
+                    await updateDoc(productRef, { name, price: price, productionCost: cost });
+                    this.showToast('Product updated successfully!');
+                } catch (error) {
+                    console.error("Failed to update product:", error);
+                    this.showToast('Failed to update product. Check console.', 'bg-red-500');
+                }
+            }
+
+            async deleteProduct(id) {
+                const productRef = doc(this.db, this.getCollectionPath('products'), id);
+                try {
+                    await deleteDoc(productRef);
+                    this.showToast('Product deleted successfully!', 'bg-red-500');
+                } catch (error) {
+                    console.error("Failed to delete product:", error);
+                    this.showToast('Failed to delete product. Check console.', 'bg-red-500');
+                }
+            }
+
+            listenToProducts(callback) {
+                const q = query(collection(this.db, this.getCollectionPath('products')));
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    this.products = snapshot.docs.map(doc => {
+                        const data = doc.data();
+                        return new Product(doc.id, data.name, data.price, data.productionCost);
+                    });
+                    callback(this.products);
+                }, (error) => console.error("Error listening to products:", error));
+                this.listeners.push(unsubscribe);
+                return unsubscribe;
+            }
+
+            // --- Customer Management ---
+
+            async addCustomer(name, email, phone) {
+                const customersRef = collection(this.db, this.getCollectionPath('customers')); 
+                try {
+                    await addDoc(customersRef, { name, email, phone });
+                    this.showToast('Customer added successfully!');
+                } catch (error) {
+                    console.error("Failed to add customer:", error);
+                    this.showToast('Failed to add customer. Check console.', 'bg-red-500');
+                }
+            }
+
+            listenToCustomers(callback) {
+                const q = query(collection(this.db, this.getCollectionPath('customers')));
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    this.customers = snapshot.docs.map(doc => {
+                        const data = doc.data();
+                        return new Customer(doc.id, data.name, data.email, data.phone);
+                    });
+                    callback(this.customers);
+                }, (error) => console.error("Error listening to customers:", error));
+                this.listeners.push(unsubscribe);
+                return unsubscribe;
+            }
+
+            // --- Sales/Billing Management ---
+
+            async recordSale(customerName, items, totalAmount) {
+                const salesRef = collection(this.db, this.getCollectionPath('sales'));
+                try {
+                    await addDoc(salesRef, {
+                        customerName: customerName,
+                        items: items,
+                        totalAmount: totalAmount,
+                        date: new Date()
+                    });
+                    this.showToast('Sale recorded and bill generated successfully!');
+                } catch (error) {
+                    console.error("Failed to record sale:", error);
+                    this.showToast('Failed to record sale. Check console.', 'bg-red-500');
+                }
+            }
+
+            listenToSales(callback) {
+                const q = query(collection(this.db, this.getCollectionPath('sales')));
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    this.sales = snapshot.docs.map(doc => {
+                        const data = doc.data();
+                        return new Sale(doc.id, data.customerName, data.items, data.totalAmount, data.date);
+                    });
+                    callback(this.sales);
+                }, (error) => console.error("Error listening to sales:", error));
+                this.listeners.push(unsubscribe);
+                return unsubscribe;
+            }
+
+            // --- Utility ---
+
+            showToast(message, bgColor = 'bg-green-500') {
+                const toast = document.getElementById('toast');
+                toast.textContent = message;
+                toast.className = `fixed bottom-5 right-5 p-4 rounded-lg text-white shadow-xl z-50 transition-transform transform translate-y-0 ${bgColor}`;
+                setTimeout(() => {
+                    toast.className = `fixed bottom-5 right-5 p-4 rounded-lg text-white shadow-xl z-50 transition-transform transform translate-y-20 ${bgColor}`;
+                }, 3000);
+            }
+
+            cleanup() {
+                this.listeners.forEach(unsub => unsub());
+            }
+        }
+
+        // --- GLOBAL APP STATE & UI LOGIC ---
+
+        let manager = null;
+        let userId = 'default-user'; 
+
+        /**
+         * Initializes the main UI and data listeners after successful authentication/login.
+         * @param {string} uid - Firebase User ID.
+         * @param {string} role - 'admin' or 'user'.
+         */
+        function initializeUI(uid, role) {
+            userId = uid;
+            currentUserRole = role;
+            
+            // Display user info
+            document.getElementById('user-id').textContent = `${currentUserName} (${currentUserRole})`;
+
+            // Show main app content and hide login screen
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('app-content').classList.remove('hidden');
+
+            // Initialize Manager (Manager does not need userId since all data is public now)
+            manager = new BusinessManager(db);
+
+            // Hide Admin-only features for General User
+            const is_admin = role === 'admin';
+            
+            // Product Entry Form
+            document.getElementById('product-entry-col').classList.toggle('hidden', !is_admin);
+            document.getElementById('product-list-col').classList.toggle('md:col-span-2', is_admin);
+            document.getElementById('product-list-col').classList.toggle('md:col-span-3', !is_admin);
+
+            // Customer Entry Form
+            document.getElementById('customer-entry-col').classList.toggle('hidden', !is_admin);
+            document.getElementById('customer-list-col').classList.toggle('md:col-span-2', is_admin);
+            document.getElementById('customer-list-col').classList.toggle('md:col-span-3', !is_admin);
+
+            // Listeners for data updates
+            manager.listenToProducts(renderProducts);
+            manager.listenToCustomers(renderCustomers);
+            manager.listenToSales(renderSales);
+
+            // Setup Form Submissions (Forms are conditionally visible but logic is always attached)
+            document.getElementById('product-form').addEventListener('submit', handleProductSubmit);
+            document.getElementById('sales-form').addEventListener('submit', handleSaleSubmit);
+            document.getElementById('customer-form').addEventListener('submit', handleCustomerSubmit);
+
+            // Setup Tab Switching
+            document.querySelectorAll('.tab-button').forEach(button => {
+                button.addEventListener('click', (e) => switchTab(e.target.dataset.tab));
+            });
+            
+            // Set initial tab
+            switchTab('products');
+        }
+
+
+        // --- LOGIN LOGIC ---
+
+        function handleLogin(event) {
+            event.preventDefault();
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) {
+                // manager.showToast will not be initialized yet, so use a simple alert replacement
+                alert('Please enter both username and password.'); 
+                return;
+            }
+
+            let role;
+            if (username === ADMIN_USER && password === ADMIN_PASS) {
+                role = 'admin';
+                currentUserName = username;
+            } else {
+                role = 'user';
+                currentUserName = username;
+            }
+            
+            if (auth.currentUser) {
+                initializeUI(auth.currentUser.uid, role);
+            } else {
+                alert('Authentication error. Firebase user not ready. Please try again.');
+            }
+        }
+
+        function logout() {
+            // Simple method to force user back to login screen by refreshing the app
+            window.location.reload(); 
+        }
+
+        // --- AUTH & FIREBASE INITIALIZATION ---
+
+        let app;
+        let db;
+        let auth;
+        setLogLevel('debug');
+
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            
+            // Ensure anonymous user is signed in first
+            onAuthStateChanged(auth, (user) => {
+                if (!user) {
+                    if (initialAuthToken) {
+                        signInWithCustomToken(auth, initialAuthToken).catch(error => {
+                            console.error("Custom token sign-in failed, falling back to anonymous:", error);
+                            signInAnonymously(auth);
+                        });
+                    } else {
+                        signInAnonymously(auth);
+                    }
+                }
+                // Once authenticated (anonymously or via token), the login form can proceed.
+                // The main app remains hidden behind the login screen initially.
+            });
+        } catch (error) {
+            console.error("Firebase initialization failed:", error);
+            document.body.innerHTML = '<div class="p-10 text-center text-red-600">Failed to initialize Firebase. Check console for details.</div>';
+        }
+
+        // --- UI RENDERING FUNCTIONS ---
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.add('hidden');
+            });
+            document.getElementById(`${tabName}-content`).classList.remove('hidden');
+
+            document.querySelectorAll('.tab-button').forEach(button => {
+                button.classList.remove('active', 'bg-emerald-500', 'text-white');
+                button.classList.add('text-gray-600', 'hover:bg-gray-100');
+            });
+            document.querySelector(`.tab-button[data-tab="${tabName}"]`).classList.add('active', 'bg-emerald-500', 'text-white');
+            document.querySelector(`.tab-button[data-tab="${tabName}"]`).classList.remove('text-gray-600', 'hover:bg-gray-100');
+        }
+
+        // Render Product List and update sales form options
+        function renderProducts(products) {
+            const productList = document.getElementById('product-list');
+            const saleProductSelect = document.getElementById('sale-product-select');
+            
+            productList.innerHTML = '';
+            saleProductSelect.innerHTML = '<option value="">Select Product</option>';
+
+            if (products.length === 0) {
+                productList.innerHTML = '<p class="text-gray-500 p-4">No products added yet.</p>';
+                return;
+            }
+
+            products.forEach(p => {
+                // List Item for Products Tab
+                productList.innerHTML += `
+                    <div class="flex justify-between items-center p-4 border-b">
+                        <div class="flex-1">
+                            <p class="font-semibold">${p.name}</p>
+                            <p class="text-sm text-gray-600">Price: $${p.price.toFixed(2)} | Cost: $${p.productionCost.toFixed(2)} | Profit: $${p.profit.toFixed(2)}</p>
+                        </div>
+                        <div class="space-x-2">
+                            ${currentUserRole === 'admin' ? 
+                                // FIX APPLIED HERE: Using anonymous function wrappers to safely call global functions
+                                // only after 'manager' is initialized, thus preventing the TypeError.
+                                `<button onclick="(function(id){ if(window.manager) window.editProduct(id); })('${p.id}')" class="text-indigo-600 hover:text-indigo-900 text-sm">Edit</button>
+                                <button onclick="(function(id){ if(window.manager) window.manager.deleteProduct(id); })('${p.id}')" class="text-red-600 hover:text-red-900 text-sm">Delete</button>` : ''}
+                        </div>
+                    </div>
+                `;
+
+                // Option for Sales Tab
+                saleProductSelect.innerHTML += `<option value="${p.id}" data-price="${p.price.toFixed(2)}">${p.name} ($${p.price.toFixed(2)})</option>`;
+            });
+        }
+
+        function editProduct(productId) {
+            const product = manager.products.find(p => p.id === productId);
+            if (!product) return;
+
+            document.getElementById('product-id').value = product.id;
+            document.getElementById('product-name').value = product.name;
+            document.getElementById('product-price').value = product.price;
+            document.getElementById('product-cost').value = product.productionCost;
+            document.getElementById('product-submit-btn').textContent = 'Update Product';
+            manager.showToast(`Editing ${product.name}`, 'bg-yellow-500');
+        }
+
+        function clearProductForm() {
+            document.getElementById('product-form').reset();
+            document.getElementById('product-id').value = '';
+            document.getElementById('product-submit-btn').textContent = 'Add Product';
+        }
+
+        // Render Customer List
+        function renderCustomers(customers) {
+            const customerList = document.getElementById('customer-list');
+            const saleCustomerSelect = document.getElementById('sale-customer-name');
+            customerList.innerHTML = '';
+            saleCustomerSelect.innerHTML = '<option value="">Select Customer</option>';
+
+            if (customers.length === 0) {
+                customerList.innerHTML = '<p class="text-gray-500 p-4">No customers added yet.</p>';
+                return;
+            }
+
+            customers.forEach(c => {
+                customerList.innerHTML += `
+                    <div class="flex justify-between items-center p-4 border-b">
+                        <div class="flex-1">
+                            <p class="font-semibold">${c.name}</p>
+                            <p class="text-sm text-gray-600">Email: ${c.email}</p>
+                        </div>
+                    </div>
+                `;
+
+                saleCustomerSelect.innerHTML += `<option value="${c.name}">${c.name}</option>`;
+            });
+        }
+
+        // Render Sales/Billing Summary
+        function renderSales(sales) {
+            const salesSummary = document.getElementById('sales-summary');
+            salesSummary.innerHTML = '';
+
+            let totalRevenue = 0;
+            let totalProfit = 0;
+
+            if (sales.length === 0) {
+                salesSummary.innerHTML = '<p class="text-gray-500 p-4">No sales recorded yet.</p>';
+                document.getElementById('total-revenue').textContent = '$0.00';
+                document.getElementById('total-profit').textContent = '$0.00';
+                return;
+            }
+
+            sales.forEach(s => {
+                let saleProfit = 0;
+                let itemsList = s.items.map(item => {
+                    // Look up product cost from the current inventory list
+                    const product = manager.products.find(p => p.id === item.productId); 
+                    const cost = product ? product.productionCost : 0; 
+                    const itemProfit = (item.price - cost) * item.quantity;
+                    saleProfit += itemProfit;
+                    return `<li>${item.quantity} x ${item.name} ($${item.subtotal.toFixed(2)})</li>`;
+                }).join('');
+
+                salesSummary.innerHTML += `
+                    <div class="p-4 border-b border-gray-200">
+                        <h3 class="font-bold text-lg">${s.customerName} - Total: $${s.totalAmount.toFixed(2)}</h3>
+                        <p class="text-sm text-gray-500 mb-2">Date: ${s.date} | Profit: $${saleProfit.toFixed(2)}</p>
+                        <ul class="text-sm list-disc ml-5">${itemsList}</ul>
+                    </div>
+                `;
+
+                totalRevenue += s.totalAmount;
+                totalProfit += saleProfit;
+            });
+
+            document.getElementById('total-revenue').textContent = `$${totalRevenue.toFixed(2)}`;
+            document.getElementById('total-profit').textContent = `$${totalProfit.toFixed(2)}`;
+        }
+
+
+        // --- FORM HANDLERS ---
+
+        function handleProductSubmit(event) {
+            event.preventDefault();
+            const id = document.getElementById('product-id').value;
+            const name = document.getElementById('product-name').value.trim();
+            const price = parseFloat(document.getElementById('product-price').value);
+            const cost = parseFloat(document.getElementById('product-cost').value);
+
+            if (isNaN(price) || isNaN(cost) || !name) {
+                manager.showToast('Please enter a name and valid numbers for Price and Cost.', 'bg-red-500');
+                return;
+            }
+
+            if (id) {
+                manager.updateProduct(id, name, price, cost);
+            } else {
+                manager.addProduct(name, price, cost);
+            }
+            clearProductForm();
+        }
+
+        function handleCustomerSubmit(event) {
+            event.preventDefault();
+            const name = document.getElementById('customer-name').value.trim();
+            const email = document.getElementById('customer-email').value.trim();
+            const phone = document.getElementById('customer-phone').value.trim();
+            
+            if (!name) {
+                manager.showToast('Customer name is required.', 'bg-red-500');
+                return;
+            }
+
+            manager.addCustomer(name, email, phone);
+            document.getElementById('customer-form').reset();
+        }
+
+        // --- SALES LOGIC ---
+
+        let currentSaleItems = [];
+
+        function initSalesLogic() {
+            document.getElementById('login-form').addEventListener('submit', handleLogin);
+            document.getElementById('add-item-btn').addEventListener('click', addItemToSale);
+            document.getElementById('sale-product-select').addEventListener('change', updateItemPrice);
+        }
+
+        function updateItemPrice() {
+            const select = document.getElementById('sale-product-select');
+            const selectedOption = select.options[select.selectedIndex];
+            const price = selectedOption ? selectedOption.dataset.price : '0.00';
+            document.getElementById('item-price-display').textContent = `Price: $${price}`;
+        }
+
+        function addItemToSale() {
+            const productId = document.getElementById('sale-product-select').value;
+            const quantity = parseInt(document.getElementById('item-quantity').value);
+
+            if (!productId || isNaN(quantity) || quantity <= 0) {
+                manager.showToast('Please select a product and enter a valid quantity.', 'bg-red-500');
+                return;
+            }
+
+            const product = manager.products.find(p => p.id === productId);
+            if (!product) return;
+
+            const existingItemIndex = currentSaleItems.findIndex(item => item.productId === productId);
+
+            if (existingItemIndex > -1) {
+                // Update existing item
+                currentSaleItems[existingItemIndex].quantity += quantity;
+                currentSaleItems[existingItemIndex].subtotal = currentSaleItems[existingItemIndex].quantity * product.price;
+            } else {
+                // Add new item
+                currentSaleItems.push({
+                    productId: productId,
+                    name: product.name,
+                    quantity: quantity,
+                    price: product.price,
+                    subtotal: quantity * product.price,
+                });
+            }
+
+            renderCurrentSaleItems();
+            document.getElementById('sale-product-select').value = '';
+            document.getElementById('item-quantity').value = 1;
+            updateItemPrice(); // Reset price display
+        }
+
+        function renderCurrentSaleItems() {
+            const saleItemsContainer = document.getElementById('current-sale-items');
+            saleItemsContainer.innerHTML = '';
+            let total = 0;
+
+            if (currentSaleItems.length === 0) {
+                saleItemsContainer.innerHTML = '<p class="text-gray-500 italic">No items added to the current bill.</p>';
+            }
+
+            currentSaleItems.forEach((item, index) => {
+                total += item.subtotal;
+                saleItemsContainer.innerHTML += `
+                    <div class="flex justify-between items-center p-2 border-b">
+                        <span class="flex-1">${item.quantity} x ${item.name}</span>
+                        <span class="font-semibold text-gray-700">$${item.subtotal.toFixed(2)}</span>
+                        <button onclick="removeItemFromSale(${index})" class="ml-4 text-red-500 hover:text-red-700 text-xs">Remove</button>
+                    </div>
+                `;
+            });
+
+            document.getElementById('bill-total').textContent = `$${total.toFixed(2)}`;
+        }
+
+        function removeItemFromSale(index) {
+            currentSaleItems.splice(index, 1);
+            renderCurrentSaleItems();
+        }
+
+        function handleSaleSubmit(event) {
+            event.preventDefault();
+
+            const customerName = document.getElementById('sale-customer-name').value;
+            const totalAmount = currentSaleItems.reduce((acc, item) => acc + item.subtotal, 0);
+
+            if (!customerName) {
+                manager.showToast('Please select a customer for the bill.', 'bg-red-500');
+                return;
+            }
+
+            if (currentSaleItems.length === 0) {
+                manager.showToast('The bill is empty. Add some products!', 'bg-red-500');
+                return;
+            }
+
+            manager.recordSale(customerName, currentSaleItems, totalAmount);
+
+            // Reset the sales interface
+            currentSaleItems = [];
+            renderCurrentSaleItems();
+            document.getElementById('sales-form').reset();
+            updateItemPrice();
+        }
+
+        // Initialize sales-specific event listeners after the DOM loads
+        window.onload = initSalesLogic;
+        
+        // Export functions to the global scope for inline onclick/onsubmit use
+        window.editProduct = editProduct;
+        window.clearProductForm = clearProductForm;
+        window.manager = manager; 
+        window.removeItemFromSale = removeItemFromSale;
+        window.switchTab = switchTab;
+        window.handleLogin = handleLogin;
+        window.logout = logout;
+    </script>
+</head>
+<body class="bg-gray-50">
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed bottom-5 right-5 p-4 rounded-lg text-white shadow-xl z-50 transition-transform transform translate-y-20"></div>
+
+    <!-- LOGIN SCREEN -->
+    <div id="login-screen">
+        <div class="w-full max-w-md p-8 space-y-6 bg-white rounded-xl shadow-2xl">
+            <h2 class="text-3xl font-bold text-center text-gray-900">EasyBize Login</h2>
+            <p class="text-sm text-center text-gray-500">
+                Admin: **admin** / **admin123**<br>
+                User: Any other credentials
+            </p>
+            <form id="login-form" class="space-y-4">
+                <div>
+                    <label for="username" class="block text-sm font-medium text-gray-700">Username</label>
+                    <input type="text" id="username" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 focus:border-emerald-500 focus:ring-emerald-500">
+                </div>
+                <div>
+                    <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+                    <input type="password" id="password" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 focus:border-emerald-500 focus:ring-emerald-500">
+                </div>
+                <button type="submit" class="w-full bg-emerald-500 text-white py-3 px-4 rounded-md hover:bg-emerald-600 font-semibold transition duration-150">
+                    Log In
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- MAIN APP CONTENT (Hidden until login) -->
+    <div id="app-content" class="hidden">
+        <div class="max-w-6xl mx-auto p-4 md:p-8">
+            <header class="mb-6 border-b pb-4 flex justify-between items-center">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-800">EasyBize System</h1>
+                    <p class="text-gray-600 mt-1">Simple Business Management for Small Operations.</p>
+                </div>
+                <div class="text-right">
+                    <p class="text-sm text-gray-500">Logged in as: <span id="user-id" class="font-semibold text-gray-700">Loading...</span></p>
+                    <button onclick="logout()" class="text-sm text-red-500 hover:text-red-700 font-medium">Log Out</button>
+                </div>
+            </header>
+
+            <!-- Tab Navigation -->
+            <div class="flex space-x-2 mb-6">
+                <button data-tab="products" class="tab-button px-4 py-2 rounded-lg text-sm font-medium">Products</button>
+                <button data-tab="customers" class="tab-button px-4 py-2 rounded-lg text-sm font-medium">Customers</button>
+                <button data-tab="sales" class="tab-button px-4 py-2 rounded-lg text-sm font-medium">Sales & Billing</button>
+            </div>
+
+            <!-- PRODUCTS Content -->
+            <div id="products-content" class="tab-content hidden">
+                <div class="grid md:grid-cols-3 gap-6">
+                    <!-- Add/Edit Product Form -->
+                    <div id="product-entry-col" class="md:col-span-1 p-4 bg-white rounded-lg shadow-md">
+                        <h2 class="text-xl font-semibold mb-4 border-b pb-2">Product Entry</h2>
+                        <form id="product-form" class="space-y-4">
+                            <input type="hidden" id="product-id" value="">
+                            <div>
+                                <label for="product-name" class="block text-sm font-medium text-gray-700">Name</label>
+                                <input type="text" id="product-name" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                            </div>
+                            <div>
+                                <label for="product-price" class="block text-sm font-medium text-gray-700">Selling Price ($)</label>
+                                <input type="number" step="0.01" min="0" id="product-price" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                            </div>
+                            <div>
+                                <label for="product-cost" class="block text-sm font-medium text-gray-700">Production Cost ($)</label>
+                                <input type="number" step="0.01" min="0" id="product-cost" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                            </div>
+                            <div class="flex space-x-2">
+                                <button type="submit" id="product-submit-btn" class="w-full bg-emerald-500 text-white py-2 px-4 rounded-md hover:bg-emerald-600">
+                                    Add Product
+                                </button>
+                                <button type="button" onclick="clearProductForm()" class="bg-gray-200 text-gray-700 py-2 px-4 rounded-md hover:bg-gray-300">
+                                    Clear
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Product List -->
+                    <div id="product-list-col" class="md:col-span-2 bg-white rounded-lg shadow-md">
+                        <h2 class="text-xl font-semibold p-4 border-b">Current Inventory</h2>
+                        <div id="product-list">
+                            <!-- Products will be rendered here by JavaScript -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CUSTOMERS Content -->
+            <div id="customers-content" class="tab-content hidden">
+                <div class="grid md:grid-cols-3 gap-6">
+                    <!-- Add Customer Form -->
+                    <div id="customer-entry-col" class="md:col-span-1 p-4 bg-white rounded-lg shadow-md">
+                        <h2 class="text-xl font-semibold mb-4 border-b pb-2">Add New Customer</h2>
+                        <form id="customer-form" class="space-y-4">
+                            <div>
+                                <label for="customer-name" class="block text-sm font-medium text-gray-700">Name</label>
+                                <input type="text" id="customer-name" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                            </div>
+                            <div>
+                                <label for="customer-email" class="block text-sm font-medium text-gray-700">Email</label>
+                                <input type="email" id="customer-email" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                            </div>
+                            <div>
+                                <label for="customer-phone" class="block text-sm font-medium text-gray-700">Phone</label>
+                                <input type="tel" id="customer-phone" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                            </div>
+                            <button type="submit" class="w-full bg-emerald-500 text-white py-2 px-4 rounded-md hover:bg-emerald-600">
+                                Add Customer
+                            </button>
+                        </form>
+                    </div>
+
+                    <!-- Customer List -->
+                    <div id="customer-list-col" class="md:col-span-2 bg-white rounded-lg shadow-md">
+                        <h2 class="text-xl font-semibold p-4 border-b">Registered Customers</h2>
+                        <div id="customer-list">
+                            <!-- Customers will be rendered here by JavaScript -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SALES Content -->
+            <div id="sales-content" class="tab-content hidden">
+                <div class="grid md:grid-cols-3 gap-6">
+                    <!-- Record Sale & Billing Form -->
+                    <div class="md:col-span-1 p-4 bg-white rounded-lg shadow-md">
+                        <h2 class="text-xl font-semibold mb-4 border-b pb-2">Record New Sale (Billing)</h2>
+                        <form id="sales-form" class="space-y-4">
+                            <!-- Customer Selection -->
+                            <div>
+                                <label for="sale-customer-name" class="block text-sm font-medium text-gray-700">Customer</label>
+                                <select id="sale-customer-name" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 bg-white">
+                                    <option value="">Select Customer</option>
+                                </select>
+                            </div>
+
+                            <h3 class="text-lg font-semibold border-b pb-2 mt-4">Add Items</h3>
+                            <!-- Product Selection -->
+                            <div class="space-y-2">
+                                <div>
+                                    <label for="sale-product-select" class="block text-sm font-medium text-gray-700">Product</label>
+                                    <select id="sale-product-select" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 bg-white">
+                                        <option value="">Select Product</option>
+                                    </select>
+                                </div>
+                                <div class="flex space-x-4 items-end">
+                                    <div class="flex-1">
+                                        <label for="item-quantity" class="block text-sm font-medium text-gray-700">Quantity</label>
+                                        <input type="number" id="item-quantity" value="1" min="1" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                                    </div>
+                                    <span id="item-price-display" class="text-sm font-medium text-gray-600">Price: $0.00</span>
+                                    <button type="button" id="add-item-btn" class="bg-indigo-500 text-white py-2 px-4 rounded-md hover:bg-indigo-600">
+                                        Add
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Current Bill Items -->
+                            <div class="bg-gray-100 p-3 rounded-md">
+                                <h4 class="font-bold border-b pb-1 mb-2">Current Bill Summary</h4>
+                                <div id="current-sale-items" class="text-sm space-y-1 min-h-[50px]">
+                                    <p class="text-gray-500 italic">No items added to the current bill.</p>
+                                </div>
+                                <div class="flex justify-between font-bold text-lg pt-2 mt-2 border-t">
+                                    <span>Total:</span>
+                                    <span id="bill-total" class="text-emerald-600">$0.00</span>
+                                </div>
+                            </div>
+
+                            <button type="submit" class="w-full bg-emerald-500 text-white py-2 px-4 rounded-md hover:bg-emerald-600">
+                                Generate & Record Bill
+                            </button>
+                        </form>
+                    </div>
+
+                    <!-- Sales Summary & History -->
+                    <div class="md:col-span-2">
+                        <!-- Metrics -->
+                        <div class="grid grid-cols-2 gap-4 mb-6">
+                            <div class="bg-indigo-500 text-white p-4 rounded-lg shadow-md">
+                                <p class="text-sm font-medium opacity-80">Total Revenue</p>
+                                <p id="total-revenue" class="text-3xl font-bold mt-1">$0.00</p>
+                            </div>
+                            <div class="bg-green-500 text-white p-4 rounded-lg shadow-md">
+                                <p class="text-sm font-medium opacity-80">Total Profit (Estimated)</p>
+                                <p id="total-profit" class="text-3xl font-bold mt-1">$0.00</p>
+                            </div>
+                        </div>
+
+                        <!-- Sales History -->
+                        <div class="bg-white rounded-lg shadow-md">
+                            <h2 class="text-xl font-semibold p-4 border-b">Sales History & Billing Summaries</h2>
+                            <div id="sales-summary">
+                                <!-- Sales summaries will be rendered here by JavaScript -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
