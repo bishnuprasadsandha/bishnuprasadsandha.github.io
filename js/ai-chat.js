@@ -3,10 +3,10 @@
 
   /* ══════════════════════════════════════════════
      CONFIG
-     Get a FREE key → https://aistudio.google.com/apikey
-     Restrict it to your domain in Google Cloud Console
+     Remove any real API key from public code.
+     For GitHub Pages, use a backend proxy or secure serverless endpoint.
      ══════════════════════════════════════════════ */
-  var GEMINI_KEY = 'AIzaSyBANHYOv3BhoN9R_Moy0YLDSqXDNP0pRGw';
+  var GEMINI_KEY = 'REPLACE_WITH_YOUR_API_KEY';
   var GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=' + GEMINI_KEY;
 
   var SYSTEM_PROMPT = [
